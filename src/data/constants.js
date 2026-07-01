@@ -387,7 +387,7 @@ export const education = [
     date: "Oct 2021 - Sep 2025",
     grade: "3.72 / 4.00 GPA",
     desc: "I am pursuing a Bachelor's degree in Informatics Engineering at Bandung Institute of Technology. My coursework includes Data Structures, Algorithms, Object-Oriented Programming, Database Systems, Operating Systems, Computer Networks, Software Engineering, and Artificial Intelligence. I also participate in student technology communities, where I collaborate on software development projects and continuously improve my technical skills.",
-    degree: "Bachelor of Technology - BTech, Computer Science and Engineering",
+    degree: "Bachelor of Engineering (S.T.), Computer Science",
   },
   {
     id: 1,
@@ -402,7 +402,7 @@ export const education = [
     id: 2,
     img: "https://firebasestorage.googleapis.com/v0/b/flexi-coding.appspot.com/o/methodist.png?alt=media&token=018a1b18-e2dd-4f34-8855-cff1b6b69fd3",
     school: "SMP Negeri 2 Bandung",
-    date: "Apr 2017 - Apr 2019",
+    date: "Apr 2015 - Apr 2018",
     grade: "92.3%",
     desc: "I completed my class 10 education at Methodist School, Dankuni, where I studied Science with Computer Application.",
     degree: "Junior High School Diploma",
