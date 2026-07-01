@@ -216,24 +216,22 @@ export default async (req, context) => {
         const discordUserId = getDiscordUserId(req, body);
         const geo = await getGeoDetails(ip, context);
 
-        const fields = [
-            { name: "IP", value: ip || "unknown" },
-            { name: "Country", value: geo.country || "unknown" },
-            { name: "City", value: geo.city || "unknown" },
-            { name: "Timezone", value: geo.timezone || "unknown" },
-            { name: "User Agent", value: String(userAgent) },
-            { name: "Visited At", value: timestamp },
-            { name: "VPN", value: geo.vpnStatus || "unknown" },
-        ];
+        let description = `IP: ${ip || "unknown"}\n` +
+            `Country: ${geo.country || "unknown"}\n` +
+            `City: ${geo.city || "unknown"}\n` +
+            `Timezone: ${geo.timezone || "unknown"}\n` +
+            `User Agent: ${String(userAgent)}\n` +
+            `Visited At: ${timestamp}\n` +
+            `VPN: ${geo.vpnStatus || "unknown"}`;
 
         if (discordUserId) {
-            fields.push({ name: "Discord User ID", value: discordUserId });
+            description += `\nDiscord User ID: ${discordUserId}`;
         }
 
         const embed = {
             title: "Visitor detected",
             color: 5814783,
-            fields,
+            description,
         };
 
         await sendToDiscord({ content: "New portfolio visit", embeds: [embed] });
