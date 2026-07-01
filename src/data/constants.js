@@ -396,7 +396,7 @@ export const education = [
     date: "Jul 2018 - Jun 2021",
     grade: "91.4%",
     desc: "Completed senior high school with a specialization in Mathematics and Natural Sciences (MIPA), with additional coursework in computer science and information technology.",
-    degree: "ISC(XII), Science with Computer",
+    degree: "Senior High School Diploma, Mathematics and Natural Sciences (MIPA)",
   },
   {
     id: 2,
@@ -405,7 +405,7 @@ export const education = [
     date: "Apr 2017 - Apr 2019",
     grade: "92.3%",
     desc: "I completed my class 10 education at Methodist School, Dankuni, where I studied Science with Computer Application.",
-    degree: "ICSC(X), Science with Computer",
+    degree: "Junior High School Diploma",
   },
 ];
 
