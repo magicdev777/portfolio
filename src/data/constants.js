@@ -391,7 +391,7 @@ export const education = [
   },
   {
     id: 1,
-    img: "https://firebasestorage.googleapis.com/v0/b/flexi-coding.appspot.com/o/methodist.png?alt=media&token=018a1b18-e2dd-4f34-8855-cff1b6b69fd3",
+    img: "https://cdn-icons-png.flaticon.com/512/8200/8200379.png",
     school: "SMA Negeri 3 Bandung",
     date: "Jul 2018 - Jun 2021",
     grade: "91.4%",
@@ -400,7 +400,7 @@ export const education = [
   },
   {
     id: 2,
-    img: "https://firebasestorage.googleapis.com/v0/b/flexi-coding.appspot.com/o/methodist.png?alt=media&token=018a1b18-e2dd-4f34-8855-cff1b6b69fd3",
+    img: "https://cdn-icons-png.flaticon.com/512/16735/16735102.png",
     school: "SMP Negeri 2 Bandung",
     date: "Jul 2015 - Jun 2018",
     grade: "92.3%",
