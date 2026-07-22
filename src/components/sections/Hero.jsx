@@ -151,7 +151,7 @@ const Hero = () => {
           <HeroInnerContainer>
             <HeroLeftContainer>
               <motion.div {...headTextAnimation}>
-                <HeroNote>Indonesia Portfolio</HeroNote>
+                <HeroNote>My Portfolio</HeroNote>
                 <Title>
                   Hi, I am <br /> {Bio.name}
                 </Title>
