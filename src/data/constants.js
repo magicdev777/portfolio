@@ -304,6 +304,36 @@ export const education = [
   },
 ];
 
+export const experiences = [
+  {
+    id: 0,
+    img: "https://cdn-icons-png.flaticon.com/512/3062/3062634.png",
+    role: "Frontend Developer",
+    company: "Creative Labs",
+    date: "Jan 2024 - Present",
+    desc: "Building responsive, accessible user interfaces using React and modern tooling. Collaborated with design and backend teams to ship features.",
+    skills: ["React", "Redux", "Styled-Components", "Testing"],
+  },
+  {
+    id: 1,
+    img: "https://cdn-icons-png.flaticon.com/512/149/149071.png",
+    role: "Full Stack Engineer",
+    company: "Trackify Inc.",
+    date: "Jun 2022 - Dec 2023",
+    desc: "Worked on end-to-end features for web and API, improved performance and CI/CD pipelines.",
+    skills: ["Node.js", "Express", "MongoDB", "Docker"],
+  },
+  {
+    id: 2,
+    img: "https://cdn-icons-png.flaticon.com/512/2107/2107957.png",
+    role: "Software Engineering Intern",
+    company: "Startup Studio",
+    date: "Jul 2021 - May 2022",
+    desc: "Implemented internal tools and analytics dashboards; gained experience with agile workflows.",
+    skills: ["JavaScript", "React", "Git"],
+  },
+];
+
 export const projects = [
   {
     id: 11,
