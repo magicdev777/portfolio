@@ -125,11 +125,18 @@ async function getGeoDetails(ip, context) {
         }
 
         const data = await response.json();
-        const vpnStatus = data?.privacy?.vpn === true
-            ? "likely VPN"
-            : data?.privacy?.proxy === true || data?.privacy?.relay === true || data?.privacy?.tor === true
-                ? "likely proxy/TOR"
-                : "likely not VPN";
+        const org = typeof data?.org === "string" ? data.org.toLowerCase() : "";
+        const hostname = typeof data?.hostname === "string" ? data.hostname.toLowerCase() : "";
+        const companyName = typeof data?.company?.name === "string" ? data.company.name.toLowerCase() : "";
+        const isAstrill = org.includes("astrill") || hostname.includes("astrill") || companyName.includes("astrill");
+
+        const vpnStatus = isAstrill
+            ? "likely Astrill VPN"
+            : data?.privacy?.vpn === true
+                ? "likely VPN"
+                : data?.privacy?.proxy === true || data?.privacy?.relay === true || data?.privacy?.tor === true
+                    ? "likely proxy/TOR"
+                    : "likely not VPN";
 
         return {
             country: data?.country || country,
