@@ -172,7 +172,7 @@ function parseBody(body) {
     }
 }
 
-export default async (req, context) => {
+async function visitHandler(req, context) {
     // Handle CORS preflight
     if (req.method === "OPTIONS") {
         return new Response(null, {
@@ -247,4 +247,60 @@ export default async (req, context) => {
             headers: { "Content-Type": "application/json" },
         });
     }
+};
+
+export default visitHandler;
+
+// Netlify Functions wrapper: adapt AWS-style `event` to the `req, context` shape
+export const handler = async (event, context) => {
+    const queryString = event?.queryStringParameters && Object.keys(event.queryStringParameters).length
+        ? `?${new URLSearchParams(event.queryStringParameters).toString()}`
+        : "";
+
+    const req = {
+        method: event?.httpMethod || event?.method || "GET",
+        headers: event?.headers || {},
+        url: (event?.path || "/") + queryString,
+        body: event?.body || null,
+    };
+
+    const res = await visitHandler(req, context);
+
+    // If the handler returned a Web Response-like object (has .text()), convert it
+    if (res && typeof res.text === "function") {
+        const bodyText = await res.text();
+        const headers = {};
+        try {
+            if (res.headers && typeof res.headers.forEach === "function") {
+                res.headers.forEach((value, key) => {
+                    headers[key] = value;
+                });
+            } else if (res.headers && typeof res.headers === "object") {
+                Object.assign(headers, res.headers);
+            }
+        } catch (e) {
+            // ignore header extraction errors
+        }
+
+        return {
+            statusCode: res.status || 200,
+            headers,
+            body: bodyText,
+        };
+    }
+
+    // If already a plain object with status/body
+    if (res && typeof res === "object" && ("status" in res || "body" in res)) {
+        return {
+            statusCode: res.status || 200,
+            headers: res.headers || { "Content-Type": "application/json" },
+            body: typeof res.body === "string" ? res.body : JSON.stringify(res.body),
+        };
+    }
+
+    return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: typeof res === "string" ? res : JSON.stringify(res),
+    };
 };
