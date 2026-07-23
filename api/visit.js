@@ -1,4 +1,4 @@
-import { sendToDiscord } from "./discord.js";
+const { sendToDiscord } = require("./discord.js");
 
 function getHeaderValue(req, headerName) {
     if (!req || !req.headers) {
@@ -249,10 +249,8 @@ async function visitHandler(req, context) {
     }
 };
 
-export default visitHandler;
-
-// Netlify Functions wrapper: adapt AWS-style `event` to the `req, context` shape
-export const handler = async (event, context) => {
+module.exports = visitHandler;
+module.exports.handler = async (event, context) => {
     const queryString = event?.queryStringParameters && Object.keys(event.queryStringParameters).length
         ? `?${new URLSearchParams(event.queryStringParameters).toString()}`
         : "";
