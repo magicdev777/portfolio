@@ -127,38 +127,52 @@ async function getGeoDetails(ip, context) {
     let timezone = geo?.timezone || "unknown";
 
     try {
-        // Try ipinfo.io first (good for Astrill)
-        let data = await fetchWithTimeout(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, 3500);
+        // Try multiple services
+        let data = await fetchWithTimeout(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, 4000);
 
-        // Fallback to ipapi.is (excellent VPN detection)
         if (!data) {
-            data = await fetchWithTimeout(`https://ipapi.is/${encodeURIComponent(ip)}`, 3500);
+            data = await fetchWithTimeout(`https://ipapi.is/${encodeURIComponent(ip)}`, 4000);
         }
 
         if (!data) {
+            // Third fallback
+            data = await fetchWithTimeout(`https://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,message,country,city,isp,org,proxy,hosting`, 3000);
+        }
+
+        if (!data || (data.status && data.status === "fail")) {
             return { country, city, timezone, vpnStatus: "unknown", isp: "unknown" };
         }
 
-        const org = (data.org || data.asn?.org || data.name || data.isp || "").toLowerCase();
+        const org = (data.org || data.asn?.org || data.isp || data.name || "").toLowerCase();
         const hostname = (data.hostname || data.host || "").toLowerCase();
         const asn = (data.asn?.asn || data.asn || "").toString();
         const company = (data.company?.name || "").toLowerCase();
 
-        // === Astrill Detection ===
-        const astrillKeywords = ["astrill", "astrill vpn", "astrill limited", "a1vpn"];
-        const isAstrill = astrillKeywords.some(kw =>
-            org.includes(kw) || hostname.includes(kw) || company.includes(kw)
-        ) || asn === "AS212238" || asn.includes("212238");
+        // === Stronger Astrill Detection ===
+        const astrillKeywords = [
+            "astrill", "veloxee", "a1vpn", "astrill systems",
+            "astrill limited", "jovica mizdrakski"
+        ];
 
-        // === General VPN/Proxy Detection ===
+        const isAstrill = astrillKeywords.some(kw =>
+            org.includes(kw) ||
+            hostname.includes(kw) ||
+            company.includes(kw)
+        ) ||
+            asn === "AS58546" ||
+            asn === "AS212238" ||
+            asn.includes("58546") ||
+            asn.includes("212238");
+
+        // General VPN/Proxy signals
         const isVPN =
             data.privacy?.vpn === true ||
             data.is_vpn === true ||
             data.vpn === true ||
             data.proxy === true ||
-            data.datacenter === true ||
             data.hosting === true ||
-            /vpn|proxy|datacenter|hosting|cloud|server farm/i.test(org);
+            data.datacenter === true ||
+            /vpn|proxy|datacenter|hosting|cloud|server farm|veloxee/i.test(org);
 
         let vpnStatus = "likely not VPN";
 
@@ -166,7 +180,7 @@ async function getGeoDetails(ip, context) {
             vpnStatus = "🚩 Likely Astrill VPN";
         } else if (isVPN) {
             vpnStatus = "⚠️ Likely VPN / Proxy";
-        } else if (data.privacy?.proxy || data.proxy || data.tor) {
+        } else if (data.proxy || data.tor) {
             vpnStatus = "⚠️ Likely Proxy / TOR";
         }
 
@@ -175,7 +189,7 @@ async function getGeoDetails(ip, context) {
             city: data.city || city,
             timezone: data.timezone || timezone,
             vpnStatus,
-            isp: org || company || "unknown"
+            isp: org || company || data.isp || "unknown"
         };
 
     } catch (error) {
@@ -230,8 +244,6 @@ async function visitHandler(req, context) {
 
     try {
         let body = {};
-        let pathValue = req.url;
-
         if (req.method === "POST") {
             body = parseBody(req.body);
         } else {
@@ -239,7 +251,6 @@ async function visitHandler(req, context) {
                 const base = req.headers && req.headers.host ? `https://${req.headers.host}` : "https://example.com";
                 const url = new URL(req.url, base);
                 body = Object.fromEntries(url.searchParams.entries());
-                pathValue = body.path || url.pathname || req.url;
             } catch (e) {
                 body = {};
             }
