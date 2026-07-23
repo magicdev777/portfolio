@@ -1,16 +1,16 @@
 import styled, { ThemeProvider } from "styled-components";
-import { darkTheme } from "./utils/Themes";
-import Navbar from "./components/Navbar";
+import { darkTheme } from "./utils/Themes.js";
+import Navbar from "./components/Navbar.jsx";
 import { BrowserRouter } from "react-router-dom";
-import Hero from "./components/sections/Hero";
-import Skills from "./components/sections/Skills";
-import StarCanvas from "./components/canvas/Stars";
+import Hero from "./components/sections/Hero.jsx";
+import Skills from "./components/sections/Skills.jsx";
+import StarCanvas from "./components/canvas/Stars.jsx";
 import { AnimatePresence } from "framer-motion";
-import Education from "./components/sections/Education";
-import Projects from "./components/sections/Projects";
-import Contact from "./components/sections/Contact";
-import Footer from "./components/sections/Footer";
-import ProjectDetails from "./components/Dialog/ProjectDetails";
+import Education from "./components/sections/Education.jsx";
+import Projects from "./components/sections/Projects.jsx";
+import Contact from "./components/sections/Contact.jsx";
+import Footer from "./components/sections/Footer.jsx";
+import ProjectDetails from "./components/Dialog/ProjectDetails.jsx";
 import { useEffect, useState } from "react";
 
 const Body = styled.div`

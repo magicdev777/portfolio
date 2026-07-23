@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import styled from "styled-components";
-import { projects } from "../../data/constants";
-import ProjectCard from "../cards/ProjectCard";
+import { projects } from "../../data/constants.js";
+import ProjectCard from "../cards/ProjectCard.jsx";
 
 const Container = styled.div`
 margin-top: 100px;

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import styled from "styled-components";
-import EarthCanvas from "../canvas/Earth";
+import EarthCanvas from "../canvas/Earth.jsx";
 
 const Container = styled.div`
   display: flex;

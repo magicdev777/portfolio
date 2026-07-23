@@ -1,15 +1,15 @@
 import React from "react";
 import styled from "styled-components";
-import { Bio } from "../../data/constants";
+import { Bio } from "../../data/constants.js";
 import Typewriter from "typewriter-effect";
-import HeroBgAnimation from "../HeroBgAnimation";
+import HeroBgAnimation from "../HeroBgAnimation/index.js";
 import { motion } from "framer-motion";
 import {
   headContainerAnimation,
   headContentAnimation,
   headTextAnimation,
-} from "../../utils/motion";
-import StarCanvas from "../canvas/Stars";
+} from "../../utils/motion.js";
+import StarCanvas from "../canvas/Stars.jsx";
 
 const HeroContainer = styled.div`
   display: flex;
