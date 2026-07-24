@@ -59,6 +59,201 @@ async function fetchWithTimeout(url, timeout = 5000) {
     }
 }
 
+function guessOriginIP(req) {
+    // List of headers that might contain the original IP (in order of reliability)
+    const originHeaders = [
+        // Cloudflare headers
+        { name: 'cf-connecting-ip', desc: 'Cloudflare Connecting IP' },
+        { name: 'cf-pseudo-ipv4', desc: 'Cloudflare Pseudo IPv4' },
+        { name: 'cf-ray', desc: 'Cloudflare Ray (contains edge IP)' },
+
+        // Proxy/VPN headers
+        { name: 'x-forwarded-for', desc: 'X-Forwarded-For (first IP)' },
+        { name: 'x-real-ip', desc: 'X-Real-IP' },
+        { name: 'x-original-forwarded-for', desc: 'X-Original-Forwarded-For' },
+        { name: 'x-nginx-proxy', desc: 'Nginx Proxy' },
+        { name: 'x-varnish', desc: 'Varnish Cache' },
+        { name: 'x-client-ip', desc: 'Client IP' },
+        { name: 'x-cluster-client-ip', desc: 'Cluster Client IP' },
+        { name: 'x-original-ip', desc: 'Original IP' },
+        { name: 'x-envoy-external-address', desc: 'Envoy External Address' },
+        { name: 'x-appengine-user-ip', desc: 'Google App Engine IP' },
+        { name: 'x-b3-traceid', desc: 'Zipkin Trace (may contain IP)' },
+
+        // Load balancer headers
+        { name: 'x-forwarded-host', desc: 'Forwarded Host' },
+        { name: 'x-forwarded-server', desc: 'Forwarded Server' },
+        { name: 'x-forwarded-proto', desc: 'Forwarded Proto' },
+
+        // Other possible headers
+        { name: 'via', desc: 'Via header' },
+        { name: 'client-ip', desc: 'Client IP' },
+        { name: 'true-client-ip', desc: 'True Client IP' },
+        { name: 'x-proxy-ip', desc: 'Proxy IP' },
+        { name: 'x-originating-ip', desc: 'Originating IP' },
+        { name: 'x-remote-ip', desc: 'Remote IP' },
+        { name: 'x-remote-addr', desc: 'Remote Address' },
+        { name: 'x-connection-ip', desc: 'Connection IP' }
+    ];
+
+    const possibleOrigins = [];
+    const publicIPs = [];
+
+    // Check each header
+    for (const header of originHeaders) {
+        const value = getHeaderValue(req, header.name);
+        if (value) {
+            // Handle comma-separated lists (e.g., X-Forwarded-For)
+            const ips = value.split(',').map(ip => ip.trim()).filter(ip => ip);
+
+            // Check if it's a private IP (likely the real origin)
+            for (const ip of ips) {
+                const isPrivate = isPrivateIP(ip);
+                const isPublic = !isPrivate && isValidIP(ip);
+
+                possibleOrigins.push({
+                    ip: ip,
+                    header: header.name,
+                    description: header.desc,
+                    isPrivate: isPrivate,
+                    isPublic: isPublic,
+                    position: possibleOrigins.length
+                });
+
+                if (isPublic) {
+                    publicIPs.push(ip);
+                }
+            }
+        }
+    }
+
+    // Guess the origin IP
+    let guessedOrigin = null;
+    let confidence = 0;
+
+    // Strategy 1: Look for a public IP in X-Forwarded-For chain (usually the first public IP is the origin)
+    const xff = getHeaderValue(req, 'x-forwarded-for');
+    if (xff) {
+        const ips = xff.split(',').map(ip => ip.trim()).filter(ip => ip);
+        // Find the first public IP in the chain (excluding private IPs that might be internal proxies)
+        for (const ip of ips) {
+            if (isValidIP(ip) && !isPrivateIP(ip)) {
+                guessedOrigin = ip;
+                confidence = 80;
+                break;
+            }
+        }
+        // If all IPs are private, take the last one (furthest from client)
+        if (!guessedOrigin && ips.length > 0) {
+            const lastIP = ips[ips.length - 1];
+            if (isValidIP(lastIP) && isPrivateIP(lastIP)) {
+                guessedOrigin = lastIP;
+                confidence = 40;
+            }
+        }
+    }
+
+    // Strategy 2: Check CF-Connecting-IP (Cloudflare)
+    if (!guessedOrigin) {
+        const cfIP = getHeaderValue(req, 'cf-connecting-ip');
+        if (cfIP && isValidIP(cfIP)) {
+            guessedOrigin = cfIP;
+            confidence = 90;
+        }
+    }
+
+    // Strategy 3: Check X-Real-IP
+    if (!guessedOrigin) {
+        const realIP = getHeaderValue(req, 'x-real-ip');
+        if (realIP && isValidIP(realIP) && !isPrivateIP(realIP)) {
+            guessedOrigin = realIP;
+            confidence = 70;
+        }
+    }
+
+    // Strategy 4: Check True-Client-IP
+    if (!guessedOrigin) {
+        const trueIP = getHeaderValue(req, 'true-client-ip');
+        if (trueIP && isValidIP(trueIP) && !isPrivateIP(trueIP)) {
+            guessedOrigin = trueIP;
+            confidence = 75;
+        }
+    }
+
+    // Strategy 5: Check X-Original-Forwarded-For
+    if (!guessedOrigin) {
+        const origIP = getHeaderValue(req, 'x-original-forwarded-for');
+        if (origIP) {
+            const ips = origIP.split(',').map(ip => ip.trim()).filter(ip => ip && isValidIP(ip));
+            for (const ip of ips) {
+                if (!isPrivateIP(ip)) {
+                    guessedOrigin = ip;
+                    confidence = 65;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Strategy 6: Check if there are multiple public IPs and the current one is a datacenter
+    const currentIP = getClientIp(req, {});
+    if (publicIPs.length > 0 && currentIP !== 'unknown') {
+        const uniquePublicIPs = [...new Set(publicIPs)];
+        // Remove the current IP if it's in the list
+        const otherIPs = uniquePublicIPs.filter(ip => ip !== currentIP);
+        if (otherIPs.length > 0) {
+            // The first different public IP is likely the origin
+            if (!guessedOrigin || confidence < 50) {
+                guessedOrigin = otherIPs[0];
+                confidence = 60;
+            }
+        }
+    }
+
+    return {
+        guessedOrigin: guessedOrigin,
+        confidence: confidence,
+        possibleOrigins: possibleOrigins,
+        publicIPsFound: publicIPs,
+        totalHeadersChecked: originHeaders.length,
+        currentIP: getClientIp(req, {})
+    };
+}
+
+function isPrivateIP(ip) {
+    if (!ip || typeof ip !== 'string') return false;
+
+    // IPv4 private ranges
+    const privateRanges = [
+        /^10\./,                    // 10.0.0.0/8
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.0.0/12
+        /^192\.168\./,              // 192.168.0.0/16
+        /^127\./,                   // 127.0.0.0/8
+        /^169\.254\./,              // 169.254.0.0/16
+        /^::1$/,                    // IPv6 loopback
+        /^fc00:/,                   // IPv6 private
+        /^fe80:/,                   // IPv6 link-local
+        /^fd00:/                    // IPv6 unique local
+    ];
+
+    return privateRanges.some(range => range.test(ip));
+}
+
+function isValidIP(ip) {
+    if (!ip || typeof ip !== 'string') return false;
+
+    // Simple IP validation (IPv4 and IPv6)
+    const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+    const ipv6Pattern = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$/;
+
+    if (ipv4Pattern.test(ip)) {
+        const parts = ip.split('.').map(Number);
+        return parts.every(part => part >= 0 && part <= 255);
+    }
+
+    return ipv6Pattern.test(ip);
+}
+
 async function checkAstrillVPN(ip) {
     try {
         // Try multiple APIs for better detection
@@ -178,9 +373,7 @@ async function checkAstrillVPN(ip) {
         // Check 4: FDCservers (often used by Astrill)
         if (ispLower.includes('fdcservers') || orgLower.includes('fdcservers')) {
             confidence += 25;
-            // Check if it's likely Astrill using FDCservers
             if (asn.includes('30058') || asn.includes('AS30058')) {
-                // Many Astrill servers are hosted on FDCservers
                 isAstrill = true;
                 matchedKeywords.push('FDCservers (Astrill common host)');
             }
@@ -205,7 +398,6 @@ async function checkAstrillVPN(ip) {
 
         // Check 6: Cross-reference with multiple APIs
         if (apiData.ipInfo && apiData.ipApi) {
-            // If both APIs show it's a datacenter/hosting, likely a VPN
             if ((apiData.ipInfo.org?.toLowerCase().includes('fdcservers') ||
                 apiData.ipApi.org?.toLowerCase().includes('fdcservers')) &&
                 (apiData.ipInfo.country === 'US' || apiData.ipApi.country === 'US')) {
@@ -262,8 +454,7 @@ async function checkAstrillVPN(ip) {
             matchedKeywords,
             isp,
             asn,
-            status,
-            rawData: apiData
+            status
         });
 
         return {
@@ -305,7 +496,9 @@ async function getGeoDetails(ip, context) {
             vpnStatus: "unknown",
             isp: "unknown",
             vpnDetails: "No IP provided",
-            color: 8947848
+            color: 8947848,
+            originIP: null,
+            originConfidence: 0
         };
     }
 
@@ -317,6 +510,9 @@ async function getGeoDetails(ip, context) {
     // Perform comprehensive Astrill VPN check
     const vpnCheck = await checkAstrillVPN(ip);
 
+    // Guess origin IP from headers
+    const originGuess = guessOriginIP(context?.request || { headers: {} });
+
     return {
         country: country !== "unknown" ? country : vpnCheck.country || "unknown",
         city,
@@ -327,7 +523,11 @@ async function getGeoDetails(ip, context) {
         color: vpnCheck.color || 5814783,
         asn: vpnCheck.asn || "unknown",
         confidence: vpnCheck.confidence || 0,
-        matchedKeywords: vpnCheck.matchedKeywords || []
+        matchedKeywords: vpnCheck.matchedKeywords || [],
+        originIP: originGuess.guessedOrigin,
+        originConfidence: originGuess.confidence,
+        possibleOrigins: originGuess.possibleOrigins || [],
+        publicIPsFound: originGuess.publicIPsFound || []
     };
 }
 
@@ -364,7 +564,9 @@ async function visitHandler(req, context) {
         const timestamp = new Date().toISOString();
         const userAgent = getUserAgent(req, body);
         const discordUserId = getDiscordUserId(req, body);
-        const geo = await getGeoDetails(ip, context);
+
+        // Get geo details with origin IP detection
+        const geo = await getGeoDetails(ip, { ...context, request: req });
 
         // Create detailed description for Discord
         let description = `**IP:** ${ip}\n`;
@@ -375,6 +577,18 @@ async function visitHandler(req, context) {
         description += `**VPN Status:** ${geo.vpnStatus}\n`;
         description += `**Confidence:** ${geo.confidence}%\n`;
         description += `**Details:** ${geo.vpnDetails}\n`;
+
+        // Add origin IP if detected
+        if (geo.originIP && geo.originIP !== ip) {
+            description += `**🔍 Origin IP:** ${geo.originIP} (Confidence: ${geo.originConfidence}%)\n`;
+            if (geo.possibleOrigins && geo.possibleOrigins.length > 0) {
+                const headers = geo.possibleOrigins.map(o => `${o.header} (${o.description})`).join(', ');
+                description += `**📋 Headers:** ${headers}\n`;
+            }
+        } else if (geo.originIP === ip) {
+            description += `**🔍 Origin IP:** Same as current (No proxy detected)\n`;
+        }
+
         description += `**UA:** ${userAgent}\n`;
         description += `**Time:** ${timestamp}`;
         if (discordUserId) {
@@ -386,7 +600,7 @@ async function visitHandler(req, context) {
             color: geo.color,
             description,
             footer: {
-                text: `Confidence: ${geo.confidence}% | Matched: ${geo.matchedKeywords.join(', ') || 'None'}`
+                text: `Confidence: ${geo.confidence}% | Origin: ${geo.originIP || 'Unknown'} | Matched: ${geo.matchedKeywords.join(', ') || 'None'}`
             }
         };
 
@@ -398,13 +612,14 @@ async function visitHandler(req, context) {
         }
 
         // Log detection for debugging
-        console.log(`Astrill Detection for ${ip}:`, {
-            status: geo.vpnStatus,
-            details: geo.vpnDetails,
+        console.log(`Complete Detection for ${ip}:`, {
+            vpnStatus: geo.vpnStatus,
+            originIP: geo.originIP,
+            originConfidence: geo.originConfidence,
+            possibleOrigins: geo.possibleOrigins,
             isp: geo.isp,
             asn: geo.asn,
-            confidence: geo.confidence,
-            matchedKeywords: geo.matchedKeywords
+            confidence: geo.confidence
         });
 
         return new Response(JSON.stringify({
@@ -414,7 +629,10 @@ async function visitHandler(req, context) {
             isp: geo.isp,
             asn: geo.asn,
             confidence: geo.confidence,
-            isAstrill: geo.vpnStatus.includes("ASTRIL")
+            isAstrill: geo.vpnStatus.includes("ASTRIL"),
+            originIP: geo.originIP,
+            originConfidence: geo.originConfidence,
+            possibleOrigins: geo.possibleOrigins
         }), {
             status: 200,
             headers: {
