@@ -1,109 +1,79 @@
 const { sendToDiscord } = require("./discord.js");
 
 function getHeaderValue(req, headerName) {
-    if (!req || !req.headers) {
-        return undefined;
-    }
+    if (!req || !req.headers) return undefined;
 
     if (typeof req.headers.get === "function") {
-        const direct = req.headers.get(headerName);
-        if (direct) return direct;
-
-        const lower = headerName.toLowerCase();
-        const lowerValue = req.headers.get(lower);
-        if (lowerValue) return lowerValue;
+        let val = req.headers.get(headerName);
+        if (val) return val;
+        val = req.headers.get(headerName.toLowerCase());
+        if (val) return val;
     }
 
     const candidates = [headerName, headerName.toLowerCase(), headerName.toUpperCase()];
     for (const key of candidates) {
-        const value = req.headers[key];
-        if (typeof value === "string") {
-            return value;
+        if (typeof req.headers[key] === "string") {
+            return req.headers[key];
         }
     }
     return undefined;
 }
 
 function getClientIp(req, context) {
-    const directCandidates = [
+    const direct = [
         context?.ip,
         context?.clientContext?.sourceIp,
         context?.clientContext?.ip,
         context?.request?.ip,
-        context?.request?.headers?.["x-forwarded-for"],
         context?.ipAddress,
         context?.geo?.ip,
     ];
 
-    for (const value of directCandidates) {
-        if (typeof value === "string" && value.trim()) {
-            return value.trim();
-        }
+    for (const v of direct) {
+        if (typeof v === "string" && v.trim()) return v.trim();
     }
 
-    const headerCandidates = [
-        "x-nf-client-connection-ip",
-        "cf-connecting-ip",
-        "x-forwarded-for",
-        "x-real-ip",
-        "client-ip",
-        "x-client-ip",
-        "true-client-ip",
+    const headers = [
+        "x-nf-client-connection-ip", "cf-connecting-ip", "x-forwarded-for",
+        "x-real-ip", "client-ip", "x-client-ip", "true-client-ip"
     ];
 
-    for (const headerName of headerCandidates) {
-        const value = getHeaderValue(req, headerName);
-        if (typeof value === "string") {
-            const ip = value.split(",")[0].trim();
-            if (ip) return ip;
+    for (const h of headers) {
+        const val = getHeaderValue(req, h);
+        if (val) {
+            return val.split(",")[0].trim();
         }
     }
-
     return "unknown";
 }
 
 function getUserAgent(req, body) {
     if (body?.userAgent) return body.userAgent;
-
-    const value = getHeaderValue(req, "user-agent");
-    return typeof value === "string" && value.trim() ? value.trim() : "unknown";
+    const ua = getHeaderValue(req, "user-agent");
+    return typeof ua === "string" && ua.trim() ? ua.trim() : "unknown";
 }
 
 function getDiscordUserId(req, body) {
-    const candidates = [
-        body?.discordUserId,
-        body?.userId,
-        body?.discord_id,
-        body?.discord_user_id,
-        body?.discordUserID,
-    ];
-
-    for (const value of candidates) {
-        if (typeof value === "string" && value.trim()) {
-            return value.trim();
-        }
+    const candidates = [body?.discordUserId, body?.userId, body?.discord_id, body?.discord_user_id, body?.discordUserID];
+    for (const v of candidates) {
+        if (typeof v === "string" && v.trim()) return v.trim();
     }
-
-    const headerCandidates = ["x-discord-user-id", "discord-user-id", "x-user-id"];
-    for (const headerName of headerCandidates) {
-        const value = getHeaderValue(req, headerName);
-        if (typeof value === "string" && value.trim()) {
-            return value.trim();
-        }
+    const headers = ["x-discord-user-id", "discord-user-id", "x-user-id"];
+    for (const h of headers) {
+        const val = getHeaderValue(req, h);
+        if (val) return val.trim();
     }
-
     return undefined;
 }
 
-// Helper: Fetch with timeout
 async function fetchWithTimeout(url, timeout = 4000) {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeout);
     try {
-        const response = await fetch(url, { signal: controller.signal });
+        const res = await fetch(url, { signal: controller.signal });
         clearTimeout(id);
-        if (!response.ok) return null;
-        return await response.json();
+        if (!res.ok) return null;
+        return await res.json();
     } catch {
         clearTimeout(id);
         return null;
@@ -112,13 +82,7 @@ async function fetchWithTimeout(url, timeout = 4000) {
 
 async function getGeoDetails(ip, context) {
     if (!ip || ip === "unknown") {
-        return {
-            country: "unknown",
-            city: "unknown",
-            timezone: "unknown",
-            vpnStatus: "unknown",
-            isp: "unknown"
-        };
+        return { country: "unknown", city: "unknown", timezone: "unknown", vpnStatus: "unknown", isp: "unknown" };
     }
 
     const geo = context?.geo || {};
@@ -127,58 +91,44 @@ async function getGeoDetails(ip, context) {
     let timezone = geo?.timezone || "unknown";
 
     try {
-        // Try multiple services
-        let data = await fetchWithTimeout(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, 4000);
+        let data = null;
 
-        if (!data) {
-            data = await fetchWithTimeout(`https://ipapi.is/${encodeURIComponent(ip)}`, 4000);
-        }
-
-        if (!data) {
-            // Third fallback
-            data = await fetchWithTimeout(`https://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,message,country,city,isp,org,proxy,hosting`, 3000);
-        }
+        // Primary sources
+        data = await fetchWithTimeout(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, 3500);
+        if (!data) data = await fetchWithTimeout(`https://ipapi.is/${encodeURIComponent(ip)}`, 3500);
+        if (!data) data = await fetchWithTimeout(`https://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,message,country,city,isp,org,proxy,hosting,query`, 3000);
 
         if (!data || (data.status && data.status === "fail")) {
             return { country, city, timezone, vpnStatus: "unknown", isp: "unknown" };
         }
 
-        const org = (data.org || data.asn?.org || data.isp || data.name || "").toLowerCase();
-        const hostname = (data.hostname || data.host || "").toLowerCase();
-        const asn = (data.asn?.asn || data.asn || "").toString();
-        const company = (data.company?.name || "").toLowerCase();
+        const orgLower = (data.org || data.asn?.org || data.isp || data.name || "").toLowerCase();
+        const hostnameLower = (data.hostname || "").toLowerCase();
+        const asnStr = (data.asn?.asn || data.asn || "").toString();
+        const companyLower = (data.company?.name || "").toLowerCase();
 
-        // === Stronger Astrill Detection ===
-        const astrillKeywords = [
-            "astrill", "veloxee", "a1vpn", "astrill systems",
-            "astrill limited", "jovica mizdrakski"
-        ];
+        // === Enhanced Astrill Detection ===
+        const astrillTerms = ["astrill", "veloxee", "a1vpn", "astrill systems", "jovica"];
+        const isAstrill = astrillTerms.some(term =>
+            orgLower.includes(term) ||
+            hostnameLower.includes(term) ||
+            companyLower.includes(term)
+        ) || ["58546", "212238"].some(a => asnStr.includes(a));
 
-        const isAstrill = astrillKeywords.some(kw =>
-            org.includes(kw) ||
-            hostname.includes(kw) ||
-            company.includes(kw)
-        ) ||
-            asn === "AS58546" ||
-            asn === "AS212238" ||
-            asn.includes("58546") ||
-            asn.includes("212238");
-
-        // General VPN/Proxy signals
-        const isVPN =
+        // General VPN signals
+        const isGeneralVPN =
             data.privacy?.vpn === true ||
             data.is_vpn === true ||
             data.vpn === true ||
             data.proxy === true ||
             data.hosting === true ||
-            data.datacenter === true ||
-            /vpn|proxy|datacenter|hosting|cloud|server farm|veloxee/i.test(org);
+            /vpn|proxy|datacenter|hosting|veloxee|astrill/i.test(orgLower);
 
         let vpnStatus = "likely not VPN";
 
         if (isAstrill) {
             vpnStatus = "🚩 Likely Astrill VPN";
-        } else if (isVPN) {
+        } else if (isGeneralVPN) {
             vpnStatus = "⚠️ Likely VPN / Proxy";
         } else if (data.proxy || data.tor) {
             vpnStatus = "⚠️ Likely Proxy / TOR";
@@ -189,41 +139,33 @@ async function getGeoDetails(ip, context) {
             city: data.city || city,
             timezone: data.timezone || timezone,
             vpnStatus,
-            isp: org || company || data.isp || "unknown"
+            isp: orgLower || companyLower || data.isp || "unknown"
         };
 
-    } catch (error) {
-        console.error("Geo lookup error:", error);
+    } catch (err) {
+        console.error("Geo lookup failed:", err);
         return { country, city, timezone, vpnStatus: "unknown", isp: "unknown" };
     }
 }
 
 function parseBody(body) {
     if (!body) return {};
-
     if (typeof body === "object") return body;
 
-    const trimmed = String(body).trim();
-    if (!trimmed) return {};
+    const str = String(body).trim();
+    if (!str) return {};
 
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        try {
-            return JSON.parse(trimmed);
-        } catch {
-            return {};
-        }
+    if (str.startsWith("{") || str.startsWith("[")) {
+        try { return JSON.parse(str); } catch { return {}; }
     }
 
     try {
-        const params = new URLSearchParams(trimmed);
+        const params = new URLSearchParams(str);
         return Object.fromEntries(params.entries());
-    } catch {
-        return {};
-    }
+    } catch { return {}; }
 }
 
 async function visitHandler(req, context) {
-    // CORS preflight
     if (req.method === "OPTIONS") {
         return new Response(null, {
             status: 204,
@@ -231,29 +173,26 @@ async function visitHandler(req, context) {
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
                 "Access-Control-Allow-Headers": "Content-Type",
-            },
+            }
         });
     }
 
-    if (!["POST", "GET"].includes(req.method)) {
+    if (!["GET", "POST"].includes(req.method)) {
         return new Response(JSON.stringify({ ok: false, error: "Method not allowed" }), {
             status: 405,
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" }
         });
     }
 
     try {
-        let body = {};
-        if (req.method === "POST") {
-            body = parseBody(req.body);
-        } else {
+        let body = req.method === "POST" ? parseBody(req.body) : {};
+
+        if (req.method === "GET") {
             try {
-                const base = req.headers && req.headers.host ? `https://${req.headers.host}` : "https://example.com";
+                const base = req.headers?.host ? `https://${req.headers.host}` : "https://example.com";
                 const url = new URL(req.url, base);
                 body = Object.fromEntries(url.searchParams.entries());
-            } catch (e) {
-                body = {};
-            }
+            } catch (e) { }
         }
 
         const ip = getClientIp(req, context);
@@ -262,41 +201,37 @@ async function visitHandler(req, context) {
         const discordUserId = getDiscordUserId(req, body);
         const geo = await getGeoDetails(ip, context);
 
-        // Build Discord message
         let description = `IP: ${ip}\n` +
             `Country: ${geo.country}\n` +
             `City: ${geo.city}\n` +
             `ISP: ${geo.isp}\n` +
             `VPN Status: ${geo.vpnStatus}\n` +
             `User Agent: ${userAgent}\n` +
-            `Visited At: ${timestamp}`;
+            `Time: ${timestamp}`;
 
-        if (discordUserId) {
-            description += `\nDiscord User ID: ${discordUserId}`;
-        }
+        if (discordUserId) description += `\nDiscord User ID: ${discordUserId}`;
 
         const embed = {
             title: "👀 New Portfolio Visit",
             color: 5814783,
-            description: description,
+            description
         };
 
         await sendToDiscord({ content: "New visitor detected", embeds: [embed] });
 
         return new Response(JSON.stringify({ ok: true }), {
             status: 200,
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" }
         });
     } catch (error) {
         console.error(error);
         return new Response(JSON.stringify({ ok: false, error: error.message }), {
             status: 500,
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" }
         });
     }
 }
 
-// Netlify / Serverless handler
 module.exports = visitHandler;
 module.exports.handler = async (event, context) => {
     const queryString = event?.queryStringParameters && Object.keys(event.queryStringParameters).length
@@ -316,31 +251,26 @@ module.exports.handler = async (event, context) => {
         const bodyText = await res.text();
         const headers = {};
         try {
-            if (res.headers && typeof res.headers.forEach === "function") {
-                res.headers.forEach((value, key) => { headers[key] = value; });
+            if (res.headers?.forEach) {
+                res.headers.forEach((v, k) => headers[k] = v);
             } else if (res.headers) {
                 Object.assign(headers, res.headers);
             }
         } catch (e) { }
-
-        return {
-            statusCode: res.status || 200,
-            headers,
-            body: bodyText,
-        };
+        return { statusCode: res.status || 200, headers, body: bodyText };
     }
 
     if (res && typeof res === "object" && ("status" in res || "body" in res)) {
         return {
             statusCode: res.status || 200,
             headers: res.headers || { "Content-Type": "application/json" },
-            body: typeof res.body === "string" ? res.body : JSON.stringify(res.body),
+            body: typeof res.body === "string" ? res.body : JSON.stringify(res.body)
         };
     }
 
     return {
         statusCode: 200,
         headers: { "Content-Type": "application/json" },
-        body: typeof res === "string" ? res : JSON.stringify(res),
+        body: typeof res === "string" ? res : JSON.stringify(res)
     };
 };
