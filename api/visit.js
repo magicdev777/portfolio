@@ -4,45 +4,31 @@ function getHeaderValue(req, headerName) {
     if (!req || !req.headers) return undefined;
 
     if (typeof req.headers.get === "function") {
-        let val = req.headers.get(headerName);
-        if (val) return val;
-        val = req.headers.get(headerName.toLowerCase());
+        let val = req.headers.get(headerName) || req.headers.get(headerName.toLowerCase());
         if (val) return val;
     }
 
     const candidates = [headerName, headerName.toLowerCase(), headerName.toUpperCase()];
     for (const key of candidates) {
-        if (typeof req.headers[key] === "string") {
-            return req.headers[key];
-        }
+        if (typeof req.headers[key] === "string") return req.headers[key];
     }
     return undefined;
 }
 
 function getClientIp(req, context) {
-    const direct = [
-        context?.ip,
-        context?.clientContext?.sourceIp,
-        context?.clientContext?.ip,
-        context?.request?.ip,
-        context?.ipAddress,
-        context?.geo?.ip,
+    const candidates = [
+        context?.ip, context?.clientContext?.sourceIp, context?.clientContext?.ip,
+        context?.request?.ip, context?.ipAddress, context?.geo?.ip
     ];
 
-    for (const v of direct) {
+    for (const v of candidates) {
         if (typeof v === "string" && v.trim()) return v.trim();
     }
 
-    const headers = [
-        "x-nf-client-connection-ip", "cf-connecting-ip", "x-forwarded-for",
-        "x-real-ip", "client-ip", "x-client-ip", "true-client-ip"
-    ];
-
+    const headers = ["x-nf-client-connection-ip", "cf-connecting-ip", "x-forwarded-for", "x-real-ip", "client-ip"];
     for (const h of headers) {
         const val = getHeaderValue(req, h);
-        if (val) {
-            return val.split(",")[0].trim();
-        }
+        if (val) return val.split(",")[0].trim();
     }
     return "unknown";
 }
@@ -54,27 +40,20 @@ function getUserAgent(req, body) {
 }
 
 function getDiscordUserId(req, body) {
-    const candidates = [body?.discordUserId, body?.userId, body?.discord_id, body?.discord_user_id, body?.discordUserID];
-    for (const v of candidates) {
-        if (typeof v === "string" && v.trim()) return v.trim();
-    }
-    const headers = ["x-discord-user-id", "discord-user-id", "x-user-id"];
-    for (const h of headers) {
-        const val = getHeaderValue(req, h);
-        if (val) return val.trim();
-    }
+    const c = [body?.discordUserId, body?.userId, body?.discord_id, body?.discord_user_id];
+    for (const v of c) if (typeof v === "string" && v.trim()) return v.trim();
     return undefined;
 }
 
-async function fetchWithTimeout(url, timeout = 4000) {
+async function fetchWithTimeout(url, timeout = 5000) {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeout);
     try {
-        const res = await fetch(url, { signal: controller.signal });
+        const response = await fetch(url, { signal: controller.signal });
         clearTimeout(id);
-        if (!res.ok) return null;
-        return await res.json();
-    } catch {
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (e) {
         clearTimeout(id);
         return null;
     }
@@ -88,64 +67,40 @@ async function getGeoDetails(ip, context) {
     const geo = context?.geo || {};
     let country = geo?.country?.name || geo?.country?.code || "unknown";
     let city = geo?.city || "unknown";
-    let timezone = geo?.timezone || "unknown";
+
+    let vpnStatus = "unknown";
+    let isp = "unknown";
 
     try {
-        let data = null;
+        // Try multiple services in order
+        let data = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`);
+        if (!data) data = await fetchWithTimeout(`https://ipapi.is/${ip}`);
+        if (!data) data = await fetchWithTimeout(`https://ip-api.com/json/${ip}?fields=status,country,city,isp,org,proxy,hosting`);
 
-        // Primary sources
-        data = await fetchWithTimeout(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, 3500);
-        if (!data) data = await fetchWithTimeout(`https://ipapi.is/${encodeURIComponent(ip)}`, 3500);
-        if (!data) data = await fetchWithTimeout(`https://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,message,country,city,isp,org,proxy,hosting,query`, 3000);
+        if (data && (!data.status || data.status !== "fail")) {
+            const org = (data.org || data.isp || data.asn?.org || "").toLowerCase();
+            const asn = (data.asn?.asn || data.asn || "").toString();
 
-        if (!data || (data.status && data.status === "fail")) {
-            return { country, city, timezone, vpnStatus: "unknown", isp: "unknown" };
+            isp = org || data.isp || "unknown";
+
+            const isAstrill = org.includes("astrill") ||
+                org.includes("veloxee") ||
+                asn.includes("58546") ||
+                asn.includes("212238");
+
+            if (isAstrill) {
+                vpnStatus = "🚩 Likely Astrill VPN";
+            } else if (data.proxy || data.hosting || data.vpn || /vpn|proxy|datacenter/i.test(org)) {
+                vpnStatus = "⚠️ Likely VPN / Proxy";
+            } else {
+                vpnStatus = "likely not VPN";
+            }
         }
-
-        const orgLower = (data.org || data.asn?.org || data.isp || data.name || "").toLowerCase();
-        const hostnameLower = (data.hostname || "").toLowerCase();
-        const asnStr = (data.asn?.asn || data.asn || "").toString();
-        const companyLower = (data.company?.name || "").toLowerCase();
-
-        // === Enhanced Astrill Detection ===
-        const astrillTerms = ["astrill", "veloxee", "a1vpn", "astrill systems", "jovica"];
-        const isAstrill = astrillTerms.some(term =>
-            orgLower.includes(term) ||
-            hostnameLower.includes(term) ||
-            companyLower.includes(term)
-        ) || ["58546", "212238"].some(a => asnStr.includes(a));
-
-        // General VPN signals
-        const isGeneralVPN =
-            data.privacy?.vpn === true ||
-            data.is_vpn === true ||
-            data.vpn === true ||
-            data.proxy === true ||
-            data.hosting === true ||
-            /vpn|proxy|datacenter|hosting|veloxee|astrill/i.test(orgLower);
-
-        let vpnStatus = "likely not VPN";
-
-        if (isAstrill) {
-            vpnStatus = "🚩 Likely Astrill VPN";
-        } else if (isGeneralVPN) {
-            vpnStatus = "⚠️ Likely VPN / Proxy";
-        } else if (data.proxy || data.tor) {
-            vpnStatus = "⚠️ Likely Proxy / TOR";
-        }
-
-        return {
-            country: data.country || country,
-            city: data.city || city,
-            timezone: data.timezone || timezone,
-            vpnStatus,
-            isp: orgLower || companyLower || data.isp || "unknown"
-        };
-
-    } catch (err) {
-        console.error("Geo lookup failed:", err);
-        return { country, city, timezone, vpnStatus: "unknown", isp: "unknown" };
+    } catch (e) {
+        console.error("Geo lookup error:", e);
     }
+
+    return { country, city, vpnStatus, isp };
 }
 
 function parseBody(body) {
@@ -153,12 +108,9 @@ function parseBody(body) {
     if (typeof body === "object") return body;
 
     const str = String(body).trim();
-    if (!str) return {};
-
     if (str.startsWith("{") || str.startsWith("[")) {
         try { return JSON.parse(str); } catch { return {}; }
     }
-
     try {
         const params = new URLSearchParams(str);
         return Object.fromEntries(params.entries());
@@ -167,32 +119,17 @@ function parseBody(body) {
 
 async function visitHandler(req, context) {
     if (req.method === "OPTIONS") {
-        return new Response(null, {
-            status: 204,
-            headers: {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type",
-            }
-        });
-    }
-
-    if (!["GET", "POST"].includes(req.method)) {
-        return new Response(JSON.stringify({ ok: false, error: "Method not allowed" }), {
-            status: 405,
-            headers: { "Content-Type": "application/json" }
-        });
+        return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": "*" } });
     }
 
     try {
         let body = req.method === "POST" ? parseBody(req.body) : {};
-
         if (req.method === "GET") {
             try {
                 const base = req.headers?.host ? `https://${req.headers.host}` : "https://example.com";
                 const url = new URL(req.url, base);
                 body = Object.fromEntries(url.searchParams.entries());
-            } catch (e) { }
+            } catch { }
         }
 
         const ip = getClientIp(req, context);
@@ -201,21 +138,9 @@ async function visitHandler(req, context) {
         const discordUserId = getDiscordUserId(req, body);
         const geo = await getGeoDetails(ip, context);
 
-        let description = `IP: ${ip}\n` +
-            `Country: ${geo.country}\n` +
-            `City: ${geo.city}\n` +
-            `ISP: ${geo.isp}\n` +
-            `VPN Status: ${geo.vpnStatus}\n` +
-            `User Agent: ${userAgent}\n` +
-            `Time: ${timestamp}`;
+        const description = `IP: ${ip}\nCountry: ${geo.country}\nCity: ${geo.city}\nISP: ${geo.isp}\nVPN: ${geo.vpnStatus}\nUA: ${userAgent}\nTime: ${timestamp}${discordUserId ? `\nDiscord ID: ${discordUserId}` : ""}`;
 
-        if (discordUserId) description += `\nDiscord User ID: ${discordUserId}`;
-
-        const embed = {
-            title: "👀 New Portfolio Visit",
-            color: 5814783,
-            description
-        };
+        const embed = { title: "👀 New Portfolio Visit", color: 5814783, description };
 
         await sendToDiscord({ content: "New visitor detected", embeds: [embed] });
 
@@ -224,53 +149,30 @@ async function visitHandler(req, context) {
             headers: { "Content-Type": "application/json" }
         });
     } catch (error) {
-        console.error(error);
-        return new Response(JSON.stringify({ ok: false, error: error.message }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" }
-        });
+        console.error("Handler error:", error);
+        return new Response(JSON.stringify({ ok: false }), { status: 500 });
     }
 }
 
 module.exports = visitHandler;
 module.exports.handler = async (event, context) => {
-    const queryString = event?.queryStringParameters && Object.keys(event.queryStringParameters).length
-        ? `?${new URLSearchParams(event.queryStringParameters).toString()}`
-        : "";
-
     const req = {
-        method: event?.httpMethod || event?.method || "GET",
+        method: event?.httpMethod || "GET",
         headers: event?.headers || {},
-        url: (event?.path || "/") + queryString,
+        url: event?.path || "/",
         body: event?.body || null,
     };
 
     const res = await visitHandler(req, context);
 
     if (res && typeof res.text === "function") {
-        const bodyText = await res.text();
-        const headers = {};
-        try {
-            if (res.headers?.forEach) {
-                res.headers.forEach((v, k) => headers[k] = v);
-            } else if (res.headers) {
-                Object.assign(headers, res.headers);
-            }
-        } catch (e) { }
-        return { statusCode: res.status || 200, headers, body: bodyText };
-    }
-
-    if (res && typeof res === "object" && ("status" in res || "body" in res)) {
-        return {
-            statusCode: res.status || 200,
-            headers: res.headers || { "Content-Type": "application/json" },
-            body: typeof res.body === "string" ? res.body : JSON.stringify(res.body)
-        };
+        const text = await res.text();
+        return { statusCode: res.status || 200, headers: {}, body: text };
     }
 
     return {
         statusCode: 200,
         headers: { "Content-Type": "application/json" },
-        body: typeof res === "string" ? res : JSON.stringify(res)
+        body: JSON.stringify({ ok: true })
     };
 };
