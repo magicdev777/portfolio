@@ -59,123 +59,235 @@ async function fetchWithTimeout(url, timeout = 5000) {
     }
 }
 
-async function checkVPN(ip) {
+async function checkAstrillVPN(ip) {
     try {
-        // Try ip-api.com first as it has good proxy/datacenter detection
-        let data = await fetchWithTimeout(`https://ip-api.com/json/${ip}?fields=status,country,city,isp,org,proxy,hosting,as,asname,reverse,query`);
+        // Try multiple APIs for better detection
+        let data = null;
+        let apiData = {};
 
-        // If ip-api fails, try ipinfo.io
-        if (!data || data.status === "fail") {
-            data = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`);
+        // Try ip-api.com first (has proxy/datacenter detection)
+        const ipApiData = await fetchWithTimeout(`https://ip-api.com/json/${ip}?fields=status,country,city,isp,org,proxy,hosting,as,asname,reverse,query,mobile,timezone`);
+        if (ipApiData && ipApiData.status !== "fail") {
+            apiData.ipApi = ipApiData;
+            data = ipApiData;
         }
 
-        // If both fail, try ipapi.is
-        if (!data || !data.isp) {
-            const ipapiData = await fetchWithTimeout(`https://ipapi.is/${ip}`);
-            if (ipapiData) {
-                data = ipapiData;
-            }
+        // Try ipinfo.io for additional details
+        const ipInfoData = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`);
+        if (ipInfoData && ipInfoData.ip) {
+            apiData.ipInfo = ipInfoData;
+            if (!data) data = ipInfoData;
+        }
+
+        // Try ipapi.is for additional verification
+        const ipApiIsData = await fetchWithTimeout(`https://ipapi.is/${ip}`);
+        if (ipApiIsData && ipApiIsData.ip) {
+            apiData.ipApiIs = ipApiIsData;
+            if (!data) data = ipApiIsData;
+        }
+
+        // Try whoisxmlapi for VPN detection
+        const whoisData = await fetchWithTimeout(`https://ipwhois.io/json/${ip}`);
+        if (whoisData && whoisData.ip) {
+            apiData.whois = whoisData;
         }
 
         if (!data) {
             return {
-                isVPN: false,
                 isAstrill: false,
+                isVPN: false,
                 isp: "unknown",
-                details: "No data available"
+                details: "No data available",
+                confidence: 0
             };
         }
 
-        // Extract data from various API formats
+        // Extract data from all sources
         const isp = data.isp || data.org || data.connection?.isp || "unknown";
         const org = data.org || data.as?.org || data.connection?.organization || "";
         const asn = data.as || data.asn || data.connection?.asn || "";
         const hostname = data.hostname || data.reverse || "";
+        const country = data.country || data.country_name || data.countryCode || "";
 
         // Convert to lowercase for case-insensitive matching
         const ispLower = String(isp).toLowerCase();
         const orgLower = String(org).toLowerCase();
         const asnLower = String(asn).toLowerCase();
         const hostnameLower = String(hostname).toLowerCase();
+        const countryLower = String(country).toLowerCase();
         const combinedText = `${ispLower} ${orgLower} ${asnLower} ${hostnameLower}`;
 
-        // Define known datacenter/VPN keywords
-        const vpnKeywords = [
-            // Datacenter/Cloud providers
-            'fdcservers', 'digitalocean', 'aws', 'amazon', 'azure', 'google cloud', 'gcp',
-            'vultr', 'linode', 'hetzner', 'ovh', 'rackspace', 'scaleway', 'cloudflare',
-            'cloud', 'datacenter', 'hosting', 'server', 'dedicated',
-            // VPN providers
-            'vpn', 'proxy', 'astrill', 'veloxee', 'nordvpn', 'expressvpn', 'surfshark',
-            'cyberghost', 'private internet access', 'pia', 'protonvpn', 'hide.me',
-            'ipvanish', 'torguard', 'vyprvpn', 'hotspot shield', 'windscribe',
-            // Known VPN ASNs
-            'as58546', 'as212238', 'as30058', 'as20473', 'as14061', 'as16276',
-            'as16509', 'as14618', 'as63949', 'as24940', 'as13335'
+        // Astrill specific detection
+        const astrillKeywords = [
+            'astrill',
+            'veloxee',
+            'as58546',
+            'as212238',
+            '58546',
+            '212238',
+            'astrill vpn'
         ];
 
-        // Check if any VPN keyword matches
-        let isVPN = false;
-        let matchedKeyword = "";
-        let isAstrill = false;
+        // Known Astrill IP ranges (commonly used)
+        const astrillIPRanges = [
+            '50.7.253.',  // FDCservers IP range often used by Astrill
+            '185.159.',
+            '185.160.',
+            '185.161.',
+            '46.246.',
+            '194.50.',
+            '195.54.',
+            '185.53.',
+            '193.187.',
+            '5.134.'
+        ];
 
-        for (const keyword of vpnKeywords) {
-            if (combinedText.includes(keyword.toLowerCase())) {
-                isVPN = true;
-                matchedKeyword = keyword;
-                if (keyword === 'astrill' || keyword === 'veloxee' ||
-                    keyword === 'as58546' || keyword === 'as212238') {
-                    isAstrill = true;
-                }
+        let isAstrill = false;
+        let confidence = 0;
+        let matchedKeywords = [];
+
+        // Check 1: Exact keyword matches
+        for (const keyword of astrillKeywords) {
+            if (combinedText.includes(keyword)) {
+                isAstrill = true;
+                confidence += 30;
+                matchedKeywords.push(keyword);
+            }
+        }
+
+        // Check 2: IP range matching
+        for (const range of astrillIPRanges) {
+            if (ip.startsWith(range)) {
+                isAstrill = true;
+                confidence += 40;
+                matchedKeywords.push(`IP range: ${range}`);
                 break;
             }
         }
 
-        // Check specific ASN for FDCservers (datacenter)
-        if (asn.includes('30058') || isp.includes('FDCservers')) {
-            isVPN = true;
-            matchedKeyword = 'FDCservers Datacenter';
+        // Check 3: ASN detection
+        const astrilASNs = ['58546', '212238', 'AS58546', 'AS212238'];
+        for (const as of astrilASNs) {
+            if (asn.includes(as) || asnLower.includes(as.toLowerCase())) {
+                isAstrill = true;
+                confidence += 30;
+                matchedKeywords.push(`ASN: ${as}`);
+            }
         }
 
-        // Check proxy/hosting flags from ip-api
-        if (data.proxy === true || data.hosting === true) {
-            isVPN = true;
-            if (!matchedKeyword) matchedKeyword = 'Proxy/Hosting detected';
+        // Check 4: FDCservers (often used by Astrill)
+        if (ispLower.includes('fdcservers') || orgLower.includes('fdcservers')) {
+            confidence += 25;
+            // Check if it's likely Astrill using FDCservers
+            if (asn.includes('30058') || asn.includes('AS30058')) {
+                // Many Astrill servers are hosted on FDCservers
+                isAstrill = true;
+                matchedKeywords.push('FDCservers (Astrill common host)');
+            }
         }
 
-        // Determine VPN status
+        // Check 5: Combined indicators
+        const vpnIndicators = [
+            data.proxy === true,
+            data.hosting === true,
+            data.vpn === true,
+            data.security?.is_vpn === true,
+            data.security?.is_proxy === true,
+            data.mobile === false && (data.hosting === true || data.proxy === true)
+        ];
+
+        if (vpnIndicators.some(v => v === true)) {
+            confidence += 10;
+            if (matchedKeywords.length === 0) {
+                matchedKeywords.push('VPN indicators detected');
+            }
+        }
+
+        // Check 6: Cross-reference with multiple APIs
+        if (apiData.ipInfo && apiData.ipApi) {
+            // If both APIs show it's a datacenter/hosting, likely a VPN
+            if ((apiData.ipInfo.org?.toLowerCase().includes('fdcservers') ||
+                apiData.ipApi.org?.toLowerCase().includes('fdcservers')) &&
+                (apiData.ipInfo.country === 'US' || apiData.ipApi.country === 'US')) {
+                confidence += 15;
+                if (!isAstrill) {
+                    matchedKeywords.push('Multiple sources confirm datacenter');
+                }
+            }
+        }
+
+        // Final determination
+        if (confidence >= 40) {
+            isAstrill = true;
+        }
+
+        // Determine if it's a general VPN
+        let isVPN = false;
+        const generalVPNKeywords = ['vpn', 'proxy', 'datacenter', 'hosting', 'cloud'];
+        for (const keyword of generalVPNKeywords) {
+            if (combinedText.includes(keyword) ||
+                data.proxy === true ||
+                data.hosting === true ||
+                data.vpn === true) {
+                isVPN = true;
+                break;
+            }
+        }
+
+        // Determine status
         let status = "✅ Regular Connection";
         let details = `ISP: ${isp}`;
         let color = 5814783; // Blue
 
-        if (isAstrill) {
-            status = "🚩 ASTRIL VPN DETECTED";
-            details = `ISP: ${isp} | ASN: ${asn}`;
+        if (isAstrill && confidence >= 40) {
+            status = "🚨 ASTRIL VPN DETECTED";
+            details = `ISP: ${isp} | ASN: ${asn} | Confidence: ${confidence}% | Matched: ${matchedKeywords.join(', ')}`;
             color = 15158332; // Red
-        } else if (isVPN) {
+        } else if (isVPN || confidence >= 20) {
             status = "⚠️ VPN/Datacenter Detected";
-            details = `ISP: ${isp} | ASN: ${asn} | Detected: ${matchedKeyword}`;
+            details = `ISP: ${isp} | ASN: ${asn} | Confidence: ${confidence}% | Indicators: ${matchedKeywords.join(', ')}`;
             color = 16766720; // Orange
         }
 
-        return {
-            isVPN,
+        // Check if it's definitely not Astrill but is a datacenter
+        if (!isAstrill && (ispLower.includes('fdcservers') || ispLower.includes('datacenter'))) {
+            status = "⚠️ Datacenter IP Detected";
+            details = `ISP: ${isp} | ASN: ${asn} (Likely used for VPNs)`;
+            color = 16766720; // Orange
+        }
+
+        console.log(`Astrill Detection for ${ip}:`, {
             isAstrill,
+            confidence,
+            matchedKeywords,
+            isp,
+            asn,
+            status,
+            rawData: apiData
+        });
+
+        return {
+            isAstrill,
+            isVPN,
+            confidence,
+            matchedKeywords,
             isp,
             org,
             asn,
+            hostname,
+            country,
             status,
             details,
             color,
-            matchedKeyword,
-            rawData: data
+            apiData
         };
 
     } catch (error) {
-        console.error("VPN check error:", error);
+        console.error("Astrill VPN check error:", error);
         return {
-            isVPN: false,
             isAstrill: false,
+            isVPN: false,
+            confidence: 0,
             isp: "unknown",
             status: "❓ Unable to determine",
             details: `Error: ${error.message}`,
@@ -202,11 +314,11 @@ async function getGeoDetails(ip, context) {
     let city = geo?.city || "unknown";
     let timezone = geo?.timezone || "unknown";
 
-    // Perform comprehensive VPN check
-    const vpnCheck = await checkVPN(ip);
+    // Perform comprehensive Astrill VPN check
+    const vpnCheck = await checkAstrillVPN(ip);
 
     return {
-        country,
+        country: country !== "unknown" ? country : vpnCheck.country || "unknown",
         city,
         timezone,
         vpnStatus: vpnCheck.status,
@@ -214,7 +326,8 @@ async function getGeoDetails(ip, context) {
         isp: vpnCheck.isp || "unknown",
         color: vpnCheck.color || 5814783,
         asn: vpnCheck.asn || "unknown",
-        matchedKeyword: vpnCheck.matchedKeyword || "none"
+        confidence: vpnCheck.confidence || 0,
+        matchedKeywords: vpnCheck.matchedKeywords || []
     };
 }
 
@@ -260,6 +373,7 @@ async function visitHandler(req, context) {
         description += `**ISP:** ${geo.isp}\n`;
         description += `**ASN:** ${geo.asn}\n`;
         description += `**VPN Status:** ${geo.vpnStatus}\n`;
+        description += `**Confidence:** ${geo.confidence}%\n`;
         description += `**Details:** ${geo.vpnDetails}\n`;
         description += `**UA:** ${userAgent}\n`;
         description += `**Time:** ${timestamp}`;
@@ -271,18 +385,26 @@ async function visitHandler(req, context) {
             title: "👀 New Portfolio Visit",
             color: geo.color,
             description,
-            footer: { text: `Detection: ${geo.matchedKeyword || 'None'}` }
+            footer: {
+                text: `Confidence: ${geo.confidence}% | Matched: ${geo.matchedKeywords.join(', ') || 'None'}`
+            }
         };
 
-        await sendToDiscord({ content: "New visitor detected", embeds: [embed] });
+        // Send to Discord
+        try {
+            await sendToDiscord({ content: "New visitor detected", embeds: [embed] });
+        } catch (discordError) {
+            console.error("Discord send error:", discordError);
+        }
 
         // Log detection for debugging
-        console.log(`VPN Detection for ${ip}:`, {
+        console.log(`Astrill Detection for ${ip}:`, {
             status: geo.vpnStatus,
             details: geo.vpnDetails,
             isp: geo.isp,
             asn: geo.asn,
-            matchedKeyword: geo.matchedKeyword
+            confidence: geo.confidence,
+            matchedKeywords: geo.matchedKeywords
         });
 
         return new Response(JSON.stringify({
@@ -290,7 +412,9 @@ async function visitHandler(req, context) {
             vpnStatus: geo.vpnStatus,
             vpnDetails: geo.vpnDetails,
             isp: geo.isp,
-            asn: geo.asn
+            asn: geo.asn,
+            confidence: geo.confidence,
+            isAstrill: geo.vpnStatus.includes("ASTRIL")
         }), {
             status: 200,
             headers: {
