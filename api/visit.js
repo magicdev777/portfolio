@@ -59,67 +59,136 @@ async function fetchWithTimeout(url, timeout = 5000) {
     }
 }
 
+async function checkAstrillVPN(ip) {
+    try {
+        // Try multiple services that are better at detecting VPNs
+        const services = [
+            `https://ipinfo.io/${ip}/json`,
+            `https://ip-api.com/json/${ip}?fields=status,country,city,isp,org,proxy,hosting,as,asname,reverse`,
+            `https://api.ipgeolocation.io/ipgeo?apiKey=demo&ip=${ip}`
+        ];
+
+        let data = null;
+        for (const url of services) {
+            const result = await fetchWithTimeout(url);
+            if (result && !result.error) {
+                data = result;
+                break;
+            }
+        }
+
+        if (!data) return { isAstrill: false, isp: "unknown", details: "No data" };
+
+        // Log the raw data for debugging (remove in production)
+        console.log("IP Data:", JSON.stringify(data, null, 2));
+
+        const isp = data.isp || data.org || data.connection?.isp || "unknown";
+        const org = data.org || data.as?.org || data.connection?.organization || "";
+        const asn = data.as || data.asn || data.connection?.asn || "";
+        const hostname = data.hostname || data.reverse || "";
+        const country = data.country || data.country_name || "";
+
+        // Convert to lowercase for case-insensitive matching
+        const ispLower = String(isp).toLowerCase();
+        const orgLower = String(org).toLowerCase();
+        const asnLower = String(asn).toLowerCase();
+        const hostnameLower = String(hostname).toLowerCase();
+        const countryLower = String(country).toLowerCase();
+
+        // Comprehensive Astrill detection
+        const isAstrill =
+            ispLower.includes("astrill") ||
+            ispLower.includes("veloxee") ||
+            orgLower.includes("astrill") ||
+            orgLower.includes("veloxee") ||
+            asnLower.includes("58546") ||
+            asnLower.includes("212238") ||
+            asnLower.includes("as58546") ||
+            asnLower.includes("as212238") ||
+            hostnameLower.includes("astrill") ||
+            hostnameLower.includes("veloxee") ||
+            (countryLower === "se" && (ispLower.includes("astrill") || orgLower.includes("astrill"))) ||
+            (data.proxy === true && (ispLower.includes("astrill") || orgLower.includes("astrill"))) ||
+            (data.hosting === true && (ispLower.includes("astrill") || orgLower.includes("astrill")));
+
+        // Check for general VPN/Proxy
+        const isVpnProxy =
+            data.proxy === true ||
+            data.hosting === true ||
+            data.vpn === true ||
+            /vpn|proxy|datacenter|hosting/i.test(ispLower) ||
+            /vpn|proxy|datacenter|hosting/i.test(orgLower) ||
+            /vpn|proxy|datacenter|hosting/i.test(hostnameLower) ||
+            (data.security?.is_vpn === true) ||
+            (data.security?.is_proxy === true);
+
+        return {
+            isAstrill,
+            isVpnProxy,
+            isp: isp,
+            org: org,
+            asn: asn,
+            hostname: hostname,
+            country: country,
+            rawData: data
+        };
+
+    } catch (error) {
+        console.error("VPN check error:", error);
+        return { isAstrill: false, isp: "unknown", details: error.message };
+    }
+}
+
 async function getGeoDetails(ip, context) {
     if (!ip || ip === "unknown") {
-        return { country: "unknown", city: "unknown", timezone: "unknown", vpnStatus: "unknown", isp: "unknown" };
+        return {
+            country: "unknown",
+            city: "unknown",
+            timezone: "unknown",
+            vpnStatus: "unknown",
+            isp: "unknown",
+            vpnDetails: "No IP provided"
+        };
     }
 
     const geo = context?.geo || {};
     let country = geo?.country?.name || geo?.country?.code || "unknown";
     let city = geo?.city || "unknown";
+    let timezone = geo?.timezone || "unknown";
+
+    // Perform comprehensive VPN check
+    const vpnCheck = await checkAstrillVPN(ip);
 
     let vpnStatus = "unknown";
-    let isp = "unknown";
+    let vpnDetails = "";
 
-    try {
-        // Try multiple services in order
-        let data = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`);
-        if (!data) data = await fetchWithTimeout(`https://ipapi.is/${ip}`);
-        if (!data) data = await fetchWithTimeout(`https://ip-api.com/json/${ip}?fields=status,country,city,isp,org,proxy,hosting,as`);
-
-        if (data && (!data.status || data.status !== "fail")) {
-            // Extract ISP and ASN information
-            const org = (data.org || data.isp || data.as?.org || "").toLowerCase();
-            const asn = (data.asn?.asn || data.as || "").toString().toLowerCase();
-            const ispName = (data.isp || data.org || "").toLowerCase();
-
-            // Set ISP
-            isp = data.isp || data.org || "unknown";
-
-            // Comprehensive Astrill VPN detection
-            const isAstrill =
-                org.includes("astrill") ||
-                org.includes("veloxee") ||
-                asn.includes("58546") ||
-                asn.includes("212238") ||
-                ispName.includes("astrill") ||
-                ispName.includes("veloxee") ||
-                data.hostname?.toLowerCase().includes("astrill") ||
-                data.org?.toLowerCase().includes("astrill") ||
-                (data.asn && (data.asn.includes("58546") || data.asn.includes("212238"))) ||
-                (data.as && (data.as.includes("58546") || data.as.includes("212238")));
-
-            // Check for VPN/Proxy indicators
-            const isVpnProxy =
-                data.proxy === true ||
-                data.hosting === true ||
-                data.vpn === true ||
-                /vpn|proxy|datacenter|hosting/i.test(org) ||
-                /vpn|proxy|datacenter|hosting/i.test(ispName);
-
-            if (isAstrill) {
-                vpnStatus = "🚩 Astrill VPN Detected";
-            } else if (isVpnProxy) {
-                vpnStatus = "⚠️ Likely VPN / Proxy";
-            } else {
-                vpnStatus = "✅ Likely not VPN";
-            }
-        }
-    } catch (e) {
-        console.error("Geo lookup error:", e);
+    if (vpnCheck.isAstrill) {
+        vpnStatus = "🚩 ASTRIL VPN DETECTED";
+        vpnDetails = `ISP: ${vpnCheck.isp} | ASN: ${vpnCheck.asn}`;
+    } else if (vpnCheck.isVpnProxy) {
+        vpnStatus = "⚠️ VPN/Proxy Detected";
+        vpnDetails = `ISP: ${vpnCheck.isp} | Type: ${vpnCheck.isAstrill ? 'Astrill' : 'Other VPN'}`;
+    } else if (vpnCheck.isp && vpnCheck.isp !== "unknown") {
+        vpnStatus = "✅ Regular Connection";
+        vpnDetails = `ISP: ${vpnCheck.isp}`;
+    } else {
+        vpnStatus = "❓ Unable to determine";
+        vpnDetails = "Could not verify connection type";
     }
 
-    return { country, city, vpnStatus, isp };
+    // If we got data from the check, use it for ISP
+    const isp = vpnCheck.isp !== "unknown" ? vpnCheck.isp :
+        (data?.isp || data?.org || "unknown");
+
+    return {
+        country,
+        city,
+        timezone,
+        vpnStatus,
+        vpnDetails,
+        isp: vpnCheck.isp || "unknown",
+        rawVpnCheck: vpnCheck
+    };
 }
 
 function parseBody(body) {
@@ -157,18 +226,42 @@ async function visitHandler(req, context) {
         const discordUserId = getDiscordUserId(req, body);
         const geo = await getGeoDetails(ip, context);
 
-        const description = `IP: ${ip}\nCountry: ${geo.country}\nCity: ${geo.city}\nISP: ${geo.isp}\nVPN Status: ${geo.vpnStatus}\nUA: ${userAgent}\nTime: ${timestamp}${discordUserId ? `\nDiscord ID: ${discordUserId}` : ""}`;
+        // Create detailed description for Discord
+        let description = `**IP:** ${ip}\n`;
+        description += `**Country:** ${geo.country}\n`;
+        description += `**City:** ${geo.city}\n`;
+        description += `**ISP:** ${geo.isp}\n`;
+        description += `**VPN Status:** ${geo.vpnStatus}\n`;
+        if (geo.vpnDetails) {
+            description += `**VPN Details:** ${geo.vpnDetails}\n`;
+        }
+        description += `**UA:** ${userAgent}\n`;
+        description += `**Time:** ${timestamp}`;
+        if (discordUserId) {
+            description += `\n**Discord ID:** ${discordUserId}`;
+        }
 
         const embed = {
             title: "👀 New Portfolio Visit",
-            color: 5814783,
+            color: geo.vpnStatus.includes("ASTRIL") ? 15158332 : 5814783, // Red for Astrill
             description,
-            footer: { text: `IP: ${ip}` }
+            footer: { text: `Connection Type: ${geo.vpnStatus}` }
         };
 
         await sendToDiscord({ content: "New visitor detected", embeds: [embed] });
 
-        return new Response(JSON.stringify({ ok: true }), {
+        // Log detection for debugging
+        console.log(`VPN Detection for ${ip}:`, {
+            status: geo.vpnStatus,
+            details: geo.vpnDetails,
+            isp: geo.isp
+        });
+
+        return new Response(JSON.stringify({
+            ok: true,
+            vpnStatus: geo.vpnStatus,
+            vpnDetails: geo.vpnDetails
+        }), {
             status: 200,
             headers: {
                 "Content-Type": "application/json",
