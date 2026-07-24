@@ -75,25 +75,44 @@ async function getGeoDetails(ip, context) {
         // Try multiple services in order
         let data = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`);
         if (!data) data = await fetchWithTimeout(`https://ipapi.is/${ip}`);
-        if (!data) data = await fetchWithTimeout(`https://ip-api.com/json/${ip}?fields=status,country,city,isp,org,proxy,hosting`);
+        if (!data) data = await fetchWithTimeout(`https://ip-api.com/json/${ip}?fields=status,country,city,isp,org,proxy,hosting,as`);
 
         if (data && (!data.status || data.status !== "fail")) {
-            const org = (data.org || data.isp || data.asn?.org || "").toLowerCase();
-            const asn = (data.asn?.asn || data.asn || "").toString();
+            // Extract ISP and ASN information
+            const org = (data.org || data.isp || data.as?.org || "").toLowerCase();
+            const asn = (data.asn?.asn || data.as || "").toString().toLowerCase();
+            const ispName = (data.isp || data.org || "").toLowerCase();
 
-            isp = org || data.isp || "unknown";
+            // Set ISP
+            isp = data.isp || data.org || "unknown";
 
-            const isAstrill = org.includes("astrill") ||
+            // Comprehensive Astrill VPN detection
+            const isAstrill =
+                org.includes("astrill") ||
                 org.includes("veloxee") ||
                 asn.includes("58546") ||
-                asn.includes("212238");
+                asn.includes("212238") ||
+                ispName.includes("astrill") ||
+                ispName.includes("veloxee") ||
+                data.hostname?.toLowerCase().includes("astrill") ||
+                data.org?.toLowerCase().includes("astrill") ||
+                (data.asn && (data.asn.includes("58546") || data.asn.includes("212238"))) ||
+                (data.as && (data.as.includes("58546") || data.as.includes("212238")));
+
+            // Check for VPN/Proxy indicators
+            const isVpnProxy =
+                data.proxy === true ||
+                data.hosting === true ||
+                data.vpn === true ||
+                /vpn|proxy|datacenter|hosting/i.test(org) ||
+                /vpn|proxy|datacenter|hosting/i.test(ispName);
 
             if (isAstrill) {
-                vpnStatus = "🚩 Likely Astrill VPN";
-            } else if (data.proxy || data.hosting || data.vpn || /vpn|proxy|datacenter/i.test(org)) {
+                vpnStatus = "🚩 Astrill VPN Detected";
+            } else if (isVpnProxy) {
                 vpnStatus = "⚠️ Likely VPN / Proxy";
             } else {
-                vpnStatus = "likely not VPN";
+                vpnStatus = "✅ Likely not VPN";
             }
         }
     } catch (e) {
@@ -138,19 +157,33 @@ async function visitHandler(req, context) {
         const discordUserId = getDiscordUserId(req, body);
         const geo = await getGeoDetails(ip, context);
 
-        const description = `IP: ${ip}\nCountry: ${geo.country}\nCity: ${geo.city}\nISP: ${geo.isp}\nVPN: ${geo.vpnStatus}\nUA: ${userAgent}\nTime: ${timestamp}${discordUserId ? `\nDiscord ID: ${discordUserId}` : ""}`;
+        const description = `IP: ${ip}\nCountry: ${geo.country}\nCity: ${geo.city}\nISP: ${geo.isp}\nVPN Status: ${geo.vpnStatus}\nUA: ${userAgent}\nTime: ${timestamp}${discordUserId ? `\nDiscord ID: ${discordUserId}` : ""}`;
 
-        const embed = { title: "👀 New Portfolio Visit", color: 5814783, description };
+        const embed = {
+            title: "👀 New Portfolio Visit",
+            color: 5814783,
+            description,
+            footer: { text: `IP: ${ip}` }
+        };
 
         await sendToDiscord({ content: "New visitor detected", embeds: [embed] });
 
         return new Response(JSON.stringify({ ok: true }), {
             status: 200,
-            headers: { "Content-Type": "application/json" }
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
         });
     } catch (error) {
         console.error("Handler error:", error);
-        return new Response(JSON.stringify({ ok: false }), { status: 500 });
+        return new Response(JSON.stringify({ ok: false, error: error.message }), {
+            status: 500,
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        });
     }
 }
 
@@ -167,12 +200,22 @@ module.exports.handler = async (event, context) => {
 
     if (res && typeof res.text === "function") {
         const text = await res.text();
-        return { statusCode: res.status || 200, headers: {}, body: text };
+        return {
+            statusCode: res.status || 200,
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            },
+            body: text
+        };
     }
 
     return {
         statusCode: 200,
-        headers: { "Content-Type": "application/json" },
+        headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*"
+        },
         body: JSON.stringify({ ok: true })
     };
 };
